@@ -79,8 +79,10 @@ Physical pad order and module dimensions are still open (see open questions).
 ```mermaid
 flowchart LR
     VDDPAD(["VDD pad"]) --> FLT["RC supply filter +<br/>local decoupling"]
-    FLT --> RAIL["quiet analog rail"]
-    MIC["analog MEMS mic<br/>top-port, IP57"] --> AMP["preamp<br/>coupling caps = ~50 Hz high-pass<br/>GBW rolloff = ~4 kHz low-pass"]
+    FLT --> RAIL["3.3 V analog rail"]
+    RAIL --> MICREG["1.65 V mic rail<br/>buffered divider"]
+    MICREG --> MIC
+    MIC["IM73A135V01<br/>IP57, bottom-port<br/>low-power mode, 70 µA"] --> AMP["preamp<br/>coupling caps = ~50 Hz high-pass<br/>GBW rolloff = ~4 kHz low-pass"]
     AMP --> PKD["precision peak detector<br/>rectify + hold, one op-amp<br/>attack ~1–5 ms, release ~100–300 ms"]
     AMP -->|"raw tap"| MUX["2:1 analog mux"]
     PKD --> MUX
@@ -111,13 +113,14 @@ stretching, startup masking, and the dB conversion itself — is firmware.
 The mic's raw output is millivolt-scale audio riding on a DC bias. The
 inter-stage coupling capacitors do double duty as the ~50 Hz high-pass (two
 cascaded coupling networks give a second-order corner for free), shedding
-rumble and the deepest clothing-rub energy. The micropower preamp raises the
-signal above the detector's noise floor, and its own gain-bandwidth rolloff
-serves as the ~4 kHz low-pass. No dedicated filter stages are fitted.
+rumble and the deepest clothing-rub energy. The micropower preamp (gain ~25×
+— the mic's single-ended sensitivity puts 115 dB SPL at roughly 100 mV peak)
+raises the signal above the detector's noise floor, and its own gain-bandwidth
+rolloff serves as the ~4 kHz low-pass. No dedicated filter stages are fitted.
 
 ```mermaid
 flowchart LR
-    SPL(("sound<br/>pressure")) --> MIC["MEMS mic element<br/>top-port, IP57<br/>+ bias network"]
+    SPL(("sound<br/>pressure")) --> MIC["IM73A135V01 mic<br/>IP57, bottom-port<br/>single-ended tap of diff output"]
     MIC -->|"raw audio<br/>mV-scale AC on DC bias"| ACC["coupling caps<br/>double as ~50 Hz high-pass"]
     ACC --> PRE["micropower preamp<br/>fixed gain<br/>GBW rolloff = ~4 kHz low-pass"]
     PRE -->|"band-limited audio<br/>(bass + voice)"| S1OUT(("to stage 2"))
@@ -193,7 +196,7 @@ stateDiagram-v2
 
 | Parameter              | Target                                | Notes                                                    |
 | ---------------------- | ------------------------------------- | -------------------------------------------------------- |
-| Total supply current   | **< 350 µA**, lower is better         | Always-on while product is on; battery runtime driver    |
+| Total supply current   | **< 350 µA** budget; ~80–110 µA projected | Mic dominates; see current budget section            |
 | Power source           | Host GPIO pin, 3.3 V nominal          | Default-off product; GPIO ~50–100 Ω source impedance     |
 | Detection band         | ~50 Hz – 4 kHz (bass + voice)         | Exact corners TBD                                        |
 | Wake threshold (effective) | 68 dB SPL, enforced in firmware   | ~±0.5 dB electrical + the mic's ±1–3 dB sensitivity spread |
@@ -205,7 +208,7 @@ stateDiagram-v2
 | Envelope dynamics      | Beat-tracking: ~1–5 ms attack, ~100–300 ms release | LEDs can ride individual kicks at 60 fps    |
 | Envelope readout rate  | Valid at 60 Hz polling                | Fresh, settled values every ~16 ms                       |
 | Direct mode            | `/RAW` low ⇒ `LEVEL` = raw audio      | 50 Hz–4 kHz, mid-rail bias; envelope + wake stay active  |
-| Microphone             | Analog MEMS, IP57, **top-port**       | Part selection TBD                                       |
+| Microphone             | Infineon IM73A135V01 (candidate)      | IP57, analog, **bottom-port**, 70 µA in low-power mode   |
 | Operating environment  | 0–45 °C, mild outdoor                 | Rain resistance via mic IP rating + conformal coat       |
 | Board protection       | Conformal coating                     | Coating must mask the mic port (assembly requirement)    |
 | BOM cost               | < ~$4; ~$2–3 projected after cost-down | 4 active ICs + roughly a dozen passives                  |
@@ -296,13 +299,17 @@ is a firmware constant applied to `LEVEL` in dB domain, so unit-to-unit spread
 collapses to the mic's own ±1–3 dB sensitivity tolerance — tighter than the
 ±3–4 dB originally accepted.
 
-### 6. Top-port mic on an open, conformal-coated board
+### 6. Bottom-port IP57 mic on a conformal-coated board (revised)
 
-The breakout hangs in free air inside the product with a top-port mic facing
-away from the PCB; the IP57 mic tolerates splash and dust, and conformal
-coating protects the electronics. No gasketed enclosure port is assumed —
-acoustic integration requirements on the parent product stay minimal.
-**Assembly requirement: the conformal coat must mask the mic port.**
+The interview chose a top-port mic, but the only component-level IP57 analog
+MEMS part on the market (see part candidates below) is bottom-port — and IP57
+was the requirement that mattered, so the port orientation yields. The mic
+ports through a ~Ø1 mm hole in the module PCB, and the parent PCB must provide
+an aligned acoustic pass-through (~Ø1.5–2 mm hole, or module placement over a
+cutout/board edge) — the one acoustic integration requirement this design
+places on the parent. Conformal coating protects the electronics.
+**Assembly requirements: the coat must mask the mic body and the port hole,
+and the port path must stay unobstructed.**
 
 ### 7. Tolerate a noisy shared rail
 
@@ -350,6 +357,56 @@ direct-mode 2:1 mux — **four ICs plus roughly a dozen passives**, projected
 parts cost ~$2–3 against the $4 target. After the linear-envelope revision, electrical accuracy is ~±0.5 dB
 across the loud range that matters; absolute accuracy is dominated by the
 mic's ±1–3 dB sensitivity spread.
+
+## Part candidates and current budget (2026-07-21)
+
+### Microphone: Infineon IM73A135V01
+
+The only component-level IP57 analog MEMS mic on the market, and it happens to
+be excellent. Datasheet V2.7 figures, low-power mode unless noted:
+
+| Parameter | Value | Note |
+| --- | --- | --- |
+| Supply current | **70 µA typ / 80 µA max** | Normal mode: 170/230 µA — not needed here |
+| Mode selection | By VDD level: 1.52–1.8 V = low power | Normal mode = 2.3–3.0 V |
+| **Absolute max VDD** | **3.0 V — must never touch the 3.3 V rail** | Drives the 1.65 V mic-rail requirement |
+| SNR / noise floor | 71 dB(A) / −109 dBV(A) | 73 dB(A) in normal mode |
+| Acoustic overload | 130 dB SPL | Above the 115 dB design ceiling |
+| Sensitivity | −38 dBV ±1 dB @ 94 dB SPL, differential | Single-ended tap ≈ −44 dBV |
+| Output | Differential, Zout 500 Ω, 0.9 V DC | AC-coupled single-ended use is fine |
+| Low-freq cutoff | 20 Hz | Coupling caps still set our ~50 Hz corner |
+| Start-up | 10–30 ms | Inside the 100 ms firmware mask |
+| Package | LLGA-5, 4×3×1.2 mm, **bottom port**, MSL1 | Port hole through module PCB required |
+| Price / sourcing | ~$1.5–2 (Digi-Key/Mouser) | LCSC listing unconfirmed — JLC global sourcing or hand-place |
+
+### Rail plan
+
+Everything runs on the 3.3 V GPIO-fed rail **except the mic**, which gets a
+1.65 V rail that simultaneously (a) respects the 3.0 V absolute max and
+(b) selects 70 µA low-power mode. Implementation: a high-value divider
+buffered by the spare channel of the quad op-amp — no extra IC. (Fallback: a
+fixed 1.6 V micro-LDO, IQ <1 µA, as a fifth IC.)
+
+### Current budget
+
+Quad op-amp channel allocation: preamp, peak detector, mic-rail buffer,
+mid-rail bias buffer.
+
+| Block | Typ (µA) | Notes |
+| --- | --- | --- |
+| Mic, low-power mode | 70 | 80 max |
+| Quad op-amp (4 ch) | 2.4 – 40 | MCP6144-class 0.6 µA/ch ↔ TLV9044-class 10 µA/ch |
+| Comparator (TLV7031-class) | 0.3 | Plus ~1 µA threshold divider |
+| Analog mux (74LVC1G3157) | ~0.1 | Static |
+| Dividers, bleeds, bias strings | ~5 | High-value resistors throughout |
+| **Total** | **~78–116 µA typ** | **≤ ~130 µA worst-case — 3× under the 350 µA budget** |
+
+At ~90 µA system draw the detector alone runs ~230 days on a 500 mAh cell.
+Op-amp trade to settle at schematic time: MCP614x (0.6 µA/ch, 100 kHz GBW —
+gain-25 puts the rolloff corner right at ~4 kHz naturally) vs TLV904x
+(10 µA/ch, 350 kHz — quieter and stronger drive, needs a feedback cap for the
+corner). Noise analysis says either is fine for ±0.5 dB envelope accuracy;
+LCSC stock and price likely decide.
 
 ## Corner-case register
 
@@ -407,6 +464,12 @@ The failure modes the design must explicitly handle:
     unpowered module would back-feed the rail through ESD diodes (the corner
     case 3 hazard again). After toggling modes, firmware discards a few ms of
     `LEVEL` samples while the mux output settles.
+15. **Mic supply window** — the IM73A135V01's absolute max is 3.0 V: it must
+    never touch the 3.3 V rail. Its 1.65 V rail also *selects* low-power mode
+    (1.52–1.8 V window): drifting above 1.8 V enters an undefined mode
+    region, and dipping below 1.2 V trips the mic's brown-out. The buffered
+    divider must hold 1.52–1.8 V across resistor tolerance and the host
+    rail's real-world range.
 
 ## Host MCU integration (reference: WCH CH32V203)
 
@@ -475,7 +538,11 @@ proper and the LED drive electronics.
 ## Open questions
 
 - Exact bandpass corner frequencies for the bass + voice band.
-- Mic part selection: analog, IP57, top-port, micro-power, JLC-availability.
+- Mic sourcing: IM73A135V01 confirmed at Digi-Key/Mouser (~$1.5–2); LCSC/JLC
+  listing unconfirmed — JLC global sourcing or hand-placement if absent.
+- Op-amp family: MCP614x (0.6 µA/ch, 100 kHz) vs TLV904x (10 µA/ch, 350 kHz)
+  — noise, output drive, and LCSC stock decide.
+- Parent-side acoustic pass-through geometry for the bottom port.
 - Peak-detector attack/release network values and the realized full-scale
   calibration constant (which SPL hits ADC full scale).
 - Comparator part choice — the input-offset spec sets how low the coarse trip
@@ -488,5 +555,6 @@ proper and the LED drive electronics.
 ## Status
 
 Requirements fleshed out via design interview, cost-down pass, linear-envelope
-revision, and direct-mode addition (2026-07-21). Next: mic part selection and a
-stage-by-stage current budget.
+revision, and direct-mode addition; mic candidate selected and current budget
+drafted (2026-07-21). Next: schematic capture and SPICE validation of the
+analog chain.
