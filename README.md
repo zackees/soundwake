@@ -7,7 +7,8 @@ MCU when the music starts.
 (IP57-class) analog MEMS microphone. It continuously measures the ambient sound
 pressure level (SPL) in the combined **bass + voice** band and exposes the result
 on two pins: an analog loudness-envelope output and an active-low wake
-interrupt. It is designed to be the always-on watchdog subsystem of a
+interrupt, plus a direct mode that turns the envelope pin into raw
+band-limited audio on request. It is designed to be the always-on watchdog subsystem of a
 battery-powered, sound-reactive product, drawing well under 350 µA while
 everything else sleeps.
 
@@ -25,21 +26,26 @@ everything else sleeps.
 - **Listens to music and people, ignores the wearer.** The detection band covers
   musical bass through the human voice range. Handling noise — the enclosure
   rubbing against clothing — is an explicit rejection target.
+- **Direct mode on demand.** Holding the `/RAW` pad low switches `LEVEL` from
+  envelope to the raw band-limited audio (50 Hz–4 kHz, mid-rail biased), so the
+  host can run FFTs, tune thresholds, or verify the whole chain in production —
+  on the single ADC trace it already has.
 - **Powers from a host GPIO pin.** The whole detector is powered by one MCU
   GPIO driven high, so the product is default-off and the host can cut the
   detector to zero at any time.
 
 ## Interface
 
-Castellated-edge SMT module, four pads. Reflows onto the parent PCB like a
+Castellated-edge SMT module, five pads. Reflows onto the parent PCB like a
 component; solders onto a carrier or headers for bench work.
 
 | Pad     | Direction | Description                                                            |
 | ------- | --------- | ---------------------------------------------------------------------- |
 | `VDD`   | power     | Supply input, fed directly from a host GPIO pin (see power model below) |
 | `GND`   | power     | Ground                                                                  |
-| `LEVEL` | out       | Analog envelope voltage, linear-in-amplitude; full scale ≈ 115 dB SPL    |
+| `LEVEL` | out       | Envelope voltage (default) or raw audio in direct mode; full scale ≈ 115 dB SPL |
 | `/WAKE` | out       | Active-low comparator, coarse ~62 dB SPL trip; open-drain, host pull-up  |
+| `/RAW`  | in        | Hold low for direct mode; module pull-up ⇒ floating = envelope mode      |
 
 ### Pinout / host wiring
 
@@ -50,17 +56,20 @@ flowchart LR
         GND["GND"]
         LEVEL["LEVEL"]
         WAKE["/WAKE"]
+        RAW["/RAW"]
     end
     subgraph MCU["CH32V203 host"]
         PWR["GPIO output<br/>power + enable"]
         MGND["GND"]
-        ADC["ADC channel<br/>12-bit, polled at 60 Hz"]
+        ADC["ADC channel<br/>60 Hz envelope / ≥8 kHz raw"]
         EXTI["EXTI pin<br/>falling edge, internal pull-up"]
+        RREQ["GPIO, open-drain<br/>direct-mode request"]
     end
     PWR -->|"3.3 V while driven high"| VDD
     GND --- MGND
-    LEVEL -->|"linear envelope, full scale ≈ 115 dB SPL"| ADC
+    LEVEL -->|"envelope (default) or raw audio"| ADC
     WAKE -->|"open-drain, active low"| EXTI
+    RREQ -->|"hold low = direct mode"| RAW
 ```
 
 Physical pad order and module dimensions are still open (see open questions).
@@ -73,13 +82,17 @@ flowchart LR
     FLT --> RAIL["quiet analog rail"]
     MIC["analog MEMS mic<br/>top-port, IP57"] --> AMP["preamp<br/>coupling caps = ~50 Hz high-pass<br/>GBW rolloff = ~4 kHz low-pass"]
     AMP --> PKD["precision peak detector<br/>rectify + hold, one op-amp<br/>attack ~1–5 ms, release ~100–300 ms"]
-    PKD --> LEVELPAD(["LEVEL pad<br/>linear envelope"])
+    AMP -->|"raw tap"| MUX["2:1 analog mux"]
+    PKD --> MUX
+    MUX --> LEVELPAD(["LEVEL pad<br/>envelope or raw audio"])
     PKD --> CMP["comparator<br/>coarse ~62 dB SPL trip, hysteresis"]
     CMP --> WAKEPAD(["/WAKE pad<br/>open-drain"])
+    RAWPAD(["/RAW pad<br/>pull-up = envelope mode"]) -.->|"held low = raw"| MUX
 ```
 
 After the cost-down pass and the linear-envelope revision (see below) the
-chain is deliberately minimal: three active ICs and no math hardware at all.
+chain is deliberately minimal: four active ICs — one of them the tiny
+direct-mode mux — and no math hardware at all.
 Qualification, wake stretching, startup masking, the dB conversion, and the
 exact 68 dB threshold all live in host firmware — the EXTI pending flag
 latches even a nanosecond comparator blip, so nothing needs to hold `/WAKE`
@@ -147,6 +160,17 @@ flowchart LR
     CMP --> WK(["/WAKE pad<br/>open-drain, active low"])
 ```
 
+### Direct mode — raw audio on the `LEVEL` pad
+
+Holding `/RAW` low flips a 2:1 analog mux so `LEVEL` carries the preamp's
+band-limited audio (50 Hz–4 kHz, riding the mid-rail bias) instead of the
+envelope. The peak detector and wake comparator keep running — the module
+still wakes the host while in direct mode. The host samples at ≥8–10 kHz and
+subtracts the bias in software. Quality is voice-band monitor grade
+(micropower-preamp noise floor): right for FFT/beat analysis, threshold
+tuning, bring-up, and production test; wrong for recording music. Hardware
+cost: one SC70 mux (<1 µA, ~$0.05–0.15) and the fifth pad.
+
 ### Firmware tail — the wake decision
 
 The timing behavior removed from hardware, as the host now implements it:
@@ -180,10 +204,11 @@ stateDiagram-v2
 | `LEVEL` accuracy       | ~±0.5 dB above 75 dB SPL              | Quantization-limited below; 16× oversampling ⇒ ~±0.3 dB at 60 dB |
 | Envelope dynamics      | Beat-tracking: ~1–5 ms attack, ~100–300 ms release | LEDs can ride individual kicks at 60 fps    |
 | Envelope readout rate  | Valid at 60 Hz polling                | Fresh, settled values every ~16 ms                       |
+| Direct mode            | `/RAW` low ⇒ `LEVEL` = raw audio      | 50 Hz–4 kHz, mid-rail bias; envelope + wake stay active  |
 | Microphone             | Analog MEMS, IP57, **top-port**       | Part selection TBD                                       |
 | Operating environment  | 0–45 °C, mild outdoor                 | Rain resistance via mic IP rating + conformal coat       |
 | Board protection       | Conformal coating                     | Coating must mask the mic port (assembly requirement)    |
-| BOM cost               | < ~$4; ~$2–3 projected after cost-down | 3 active ICs + roughly a dozen passives                  |
+| BOM cost               | < ~$4; ~$2–3 projected after cost-down | 4 active ICs + roughly a dozen passives                  |
 | Assembly               | JLCPCB SMT (design to their catalog)  | *Assumed default — not yet confirmed*                    |
 
 ## Architecture decisions
@@ -288,6 +313,18 @@ element — no ferrite is fitted (cost-down). The first prototype should carry
 test points to characterize how much LED noise actually reaches the mic path.
 *(Assumed default — not yet confirmed.)*
 
+### 8. Direct mode shares the `LEVEL` pad
+
+The host budget allows a single ADC trace, so raw audio cannot get its own
+signal pad. A 2:1 analog mux (SC70, <1 µA, ~$0.05–0.15) selects what `LEVEL`
+carries: the envelope by default (module pull-up on `/RAW`), or the preamp's
+raw band-limited audio while the host holds `/RAW` low. The host drives
+`/RAW` open-drain — pull low to request direct mode, release to return —
+which also eliminates any back-feed path into an unpowered module. The
+envelope detector and wake comparator keep running in direct mode, and the
+raw tap gives the bench test plan a probe point into the front end that a
+conformal-coated board otherwise hides.
+
 ## Cost-down pass (2026-07-21)
 
 This is a wearable: worn on the body, its realistic temperature swing is far
@@ -308,9 +345,9 @@ board area, and assembly simplicity. Eliminated:
 | Ferrite bead in supply filter                 | GPIO source impedance + RC + local decoupling               | None expected; verify on first prototype               |
 
 Resulting active BOM: the mic, one dual-or-quad micropower op-amp package
-(preamp channels + peak detector), and one nanopower comparator — **three ICs
-plus roughly a dozen passives**, projected parts cost ~$2–3 against the $4
-target. After the linear-envelope revision, electrical accuracy is ~±0.5 dB
+(preamp channels + peak detector), one nanopower comparator, and the
+direct-mode 2:1 mux — **four ICs plus roughly a dozen passives**, projected
+parts cost ~$2–3 against the $4 target. After the linear-envelope revision, electrical accuracy is ~±0.5 dB
 across the loud range that matters; absolute accuracy is dominated by the
 mic's ±1–3 dB sensitivity spread.
 
@@ -364,6 +401,12 @@ The failure modes the design must explicitly handle:
     12-bit read is coarser than 0.2 dB/count (1.2 dB at 60 dB). Firmware
     oversamples ~16× per 60 fps frame for ~2 extra effective bits; the LED
     show's 85–115 dB working range is unaffected.
+14. **`/RAW` drive discipline** — the host must never drive `/RAW` high: the
+    module pull-up defines the idle state, so the host GPIO runs open-drain
+    (low = direct mode, released = envelope mode). Driving high into an
+    unpowered module would back-feed the rail through ESD diodes (the corner
+    case 3 hazard again). After toggling modes, firmware discards a few ms of
+    `LEVEL` samples while the mux output settles.
 
 ## Host MCU integration (reference: WCH CH32V203)
 
@@ -403,6 +446,10 @@ Two firmware nuances:
 - **Wake qualification (firmware)**: on EXTI wake, sample `LEVEL` for
   30–100 ms and apply the true 68 dB threshold in dB domain; if the loudness
   isn't sustained above it, return to Stop immediately.
+- **Direct mode**: `/RAW` from any host GPIO in open-drain mode; pull low,
+  then sample `LEVEL` at ≥8–10 kHz (band is ≤4 kHz) and subtract the mid-rail
+  bias in software. Release to return to envelope mode, discarding the first
+  few ms of samples while the mux settles.
 
 ## Planned deliverables
 
@@ -433,12 +480,13 @@ proper and the LED drive electronics.
   calibration constant (which SPL hits ADC full scale).
 - Comparator part choice — the input-offset spec sets how low the coarse trip
   must sit.
+- Analog mux part choice for direct mode (on-resistance, leakage, JLC stock).
 - Firmware qualification window tuning (within 30–100 ms) and EXTI re-arm
   policy.
 - Module dimensions and castellation pinout order.
 
 ## Status
 
-Requirements fleshed out via design interview, cost-down pass, and
-linear-envelope revision (2026-07-21). Next: mic part selection and a
+Requirements fleshed out via design interview, cost-down pass, linear-envelope
+revision, and direct-mode addition (2026-07-21). Next: mic part selection and a
 stage-by-stage current budget.
