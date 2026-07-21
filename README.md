@@ -332,6 +332,21 @@ envelope detector and wake comparator keep running in direct mode, and the
 raw tap gives the bench test plan a probe point into the front end that a
 conformal-coated board otherwise hides.
 
+### 9. CH32V203 internal op-amp: evaluated and rejected
+
+The host MCU has two on-chip op-amp/comparator blocks, which raised the
+question of removing an external amp by designing holistically. Datasheet
+Table 4-31 settles it: **195 µA static per amp** (no load), Vos 1.5/6 mV —
+one internal amp costs 2.5× the entire microphone budget, so it is
+disqualified from the always-on listening path regardless of whether it runs
+in Stop mode. It remains available to the host for awake-mode uses.
+
+The same evaluation surfaced a firmware-envelope alternative (comparator
+watching raw audio peaks, envelope computed digitally while awake, quad→dual
+op-amp, mux and `LEVEL` eliminated). **Considered and declined 2026-07-21**:
+the analog peak detector stays, keeping the calm hardware wake behavior and
+the 60 Hz `LEVEL` interface that works with any host.
+
 ## Cost-down pass (2026-07-21)
 
 This is a wearable: worn on the body, its realistic temperature swing is far
@@ -533,7 +548,9 @@ design, part selection, board layout, and validation.
 
 The parent product — a crystal ornament lit by heavily PWM-driven LEDs that
 reacts to music at events — is out of scope, as are the host MCU firmware
-proper and the LED drive electronics.
+proper and the LED drive electronics. The host-side system design (CH32V203
+board integrating this module) lives in the companion repo
+[`fastled/soundwave`](https://github.com/fastled/soundwave) (private).
 
 ## Open questions
 
