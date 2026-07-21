@@ -182,6 +182,31 @@ The failure modes the design must explicitly handle:
 
 ## Host MCU integration (reference: WCH CH32V203)
 
+### System power states
+
+GPIO power means the power pin *is* the enable, and firmware selects between
+three system states with no extra hardware:
+
+| State | MCU mode | Power GPIO | System draw | What wakes it |
+| --- | --- | --- | --- | --- |
+| **Listening** | Stop (`LPDS=1`) | driven high | ~10.5 µA + detector (≤350 µA) | Sound via `/WAKE` EXTI (~76 µs), or any other EXTI/RTC |
+| **Detector off, MCU napping** | Stop (`LPDS=1`) | driven low | ~10.5 µA | RTC alarm or other EXTI — e.g. periodic wake to decide whether to re-arm the mic |
+| **Full off / shipping** | Standby | floats (automatic) | ~0.5–1.1 µA | Only WKUP pin, RTC alarm, or reset — **not sound** |
+
+Two firmware nuances:
+
+1. **Standby wake is a reset, not a resume.** Stop wake continues execution
+   after WFI/WFE with RAM and GPIO state intact — which is why the power pin
+   stays high through the sleep. Standby wake restarts from the reset vector
+   (~4.8 ms) with GPIO config lost, so Standby is a true "off" state: enter it
+   on user power-down, and return via a button on WKUP (or RTC).
+2. **Re-entry sequencing applies every time the detector is re-powered.** Any
+   transition into Listening — from Standby wake *or* from the detector-off
+   Stop state — must rerun the corner-case-3 sequence: power pin high → wait
+   out the ~100 ms startup mask → enable the `/WAKE` pull-up → arm EXTI.
+
+### Wiring and firmware
+
 - **Power**: one GPIO drives the module's `VDD`. Sleep in **Stop mode** (not
   Standby) so the pin stays high, with the regulator in low-power mode
   (`LPDS=1, PDDS=0`) for 10.5 µA instead of 70.5 µA.
