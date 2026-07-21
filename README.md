@@ -86,6 +86,90 @@ The wake comparator taps the envelope *before* the log stage — a single fixed
 threshold is one fixed voltage either way, so the wake path doesn't depend on
 log accuracy. The startup mask (corner case 2) lives in the one-shot block.
 
+## How the analog sound processor works
+
+The processor is four stages. Sound becomes a band-limited electrical signal
+(stage 1), the signal becomes a loudness envelope (stage 2), and the envelope
+feeds two independent consumers: the dB conversion driving `LEVEL` (stage 3)
+and the wake decision driving `/WAKE` (stage 4).
+
+### Stage 1 — Acoustic front end: sound → band-limited signal
+
+The mic's raw output is millivolt-scale audio riding on a DC bias. AC coupling
+strips the bias, a micropower preamp raises the signal above the noise floor of
+the later stages, and the bandpass defines *what counts as sound worth
+measuring*: the high-pass corner sheds rumble and the deepest clothing-rub
+energy, the low-pass corner rejects hiss and any LED-PWM harmonics above the
+voice band.
+
+```mermaid
+flowchart LR
+    SPL(("sound<br/>pressure")) --> MIC["MEMS mic element<br/>top-port, IP57<br/>+ bias network"]
+    MIC -->|"raw audio<br/>mV-scale AC on DC bias"| ACC["AC coupling<br/>strips DC bias"]
+    ACC --> PRE["micropower preamp<br/>fixed gain"]
+    PRE -->|"amplified audio"| HPF["high-pass ~50 Hz<br/>sheds rumble + deep rub energy"]
+    HPF --> LPF["low-pass ~4 kHz<br/>rejects hiss + PWM harmonics"]
+    LPF -->|"band-limited audio<br/>(bass + voice)"| S1OUT(("to stage 2"))
+```
+
+### Stage 2 — Envelope detector: audio → loudness
+
+A precision rectifier folds the audio waveform to one polarity and charges a
+hold capacitor through a fast path (attack ~1–5 ms, so a single kick drum
+registers at full height) while a slow bleed discharges it (release
+~100–300 ms, so the level falls musically between beats instead of collapsing).
+The capacitor voltage *is* the current loudness, in linear amplitude.
+
+```mermaid
+flowchart LR
+    S2IN(("band-limited<br/>audio")) --> RECT["precision rectifier<br/>half-wave"]
+    RECT -->|"fast charge path<br/>attack ~1–5 ms"| CAP["hold capacitor<br/>voltage = current loudness"]
+    CAP -->|"slow discharge path<br/>release ~100–300 ms"| BLEED["release bleed"]
+    CAP -->|"envelope<br/>(linear amplitude)"| S2OUT(("to stages 3 and 4"))
+```
+
+### Stage 3 — Log stage: loudness → dB on `LEVEL`
+
+A transdiode log converter (BJT junction in a micropower op-amp's feedback)
+exploits the exponential diode law: output voltage becomes proportional to the
+*logarithm* of the envelope — which is exactly dB. Scale and offset then map
+60–115 dB SPL onto the output swing (~55 dB span), and a buffer gives the host
+ADC a low-impedance source. The BJT's temperature dependence is the known
+weakness — handled by a compensation network or a published dB/°C figure for
+firmware correction (corner case 9).
+
+```mermaid
+flowchart LR
+    S3IN(("envelope")) --> LOGC["transdiode log converter<br/>BJT junction + micropower op-amp"]
+    LOGC -->|"voltage ∝ log(amplitude)<br/>= linear-in-dB"| SCL["scale + offset<br/>60–115 dB SPL → output swing"]
+    SCL --> TC["temperature handling<br/>compensation or published dB/°C"]
+    TC --> OB["output buffer<br/>low impedance for host ADC"]
+    OB --> LVPAD(["LEVEL pad"])
+```
+
+### Stage 4 — Wake path: loudness → `/WAKE` decision
+
+The wake path is a small analog state machine fed by the envelope. A comparator
+with hysteresis watches for the 68 dB SPL crossing; a qualification window
+demands the energy be *sustained* 30–100 ms (music passes, a scratch does not);
+the one-shot then stretches the verdict into a ~100 ms active-low pulse the
+sleeping host cannot miss, retriggering for as long as the sound persists. The
+startup mask keeps the whole path muted while the analog chain settles after
+power-up.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Masked : power applied on VDD pad
+    Masked --> Armed : startup mask ~100 ms elapsed
+    Armed --> Qualifying : envelope crosses 68 dB SPL<br/>(comparator with hysteresis)
+    Qualifying --> Armed : drops below threshold too soon<br/>(scratch rejected)
+    Qualifying --> Asserted : sustained 30–100 ms<br/>(music confirmed)
+    Asserted --> Asserted : still above threshold<br/>(retrigger, stays low)
+    Asserted --> Armed : quiet and ~100 ms stretch elapsed<br/>(/WAKE releases)
+    note right of Masked : /WAKE held released while analog chain settles
+    note right of Asserted : /WAKE driven low (open-drain)
+```
+
 ## Target specifications
 
 | Parameter              | Target                                | Notes                                                    |
