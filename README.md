@@ -71,11 +71,20 @@ default-off with zero leakage, and gives the host a free kill switch.
 The trap this creates: in the CH32V203's deepest **Standby** mode, GPIOs go
 high-impedance — the detector would lose power exactly when it should be
 listening, and nothing could ever wake the MCU. Therefore the host **must sleep
-in Stop mode**, where GPIO output states are retained. Stop mode draws more
-than Standby (tens of µA vs. a couple of µA — exact figure to be verified
-against the datasheet). If measured Stop current is unacceptable, the
-documented fallback is a latching load switch: the MCU pulses power on, a
-discrete latch holds it, and Standby becomes usable again.
+in Stop mode**, where GPIO output states are retained.
+
+Verified against the CH32V203 datasheet (V2.7, tables 4-8-1/4-8-2, 4-16): Stop
+mode with the regulator in low-power mode draws **10.5 µA typ** vs. ~0.5–1.1 µA
+in Standby — a ~10 µA penalty, about 3 % of the detector's own budget, so the
+GPIO-power scheme stands and no latching load switch is needed. Stop also wakes
+in ~76 µs vs. Standby's ~4.8 ms, comfortably inside the `/WAKE` stretch. Two
+firmware/part traps:
+
+- Stop entry must select the regulator's low-power mode (`LPDS=1, PDDS=0` in
+  PWR_CTLR). With the regulator left in Run mode, Stop draws 70.5 µA.
+- The 128K **CH32V203RBT6 is a different die and much worse** (245.7 µA
+  regulator-run Stop, 22.9 µA regulator-low-power Stop) — prefer a non-RBT6
+  variant.
 
 A side benefit: the GPIO's ~50–100 Ω source impedance plus the module's local
 bulk capacitance forms a free low-pass filter against rail noise.
@@ -174,7 +183,8 @@ The failure modes the design must explicitly handle:
 ## Host MCU integration (reference: WCH CH32V203)
 
 - **Power**: one GPIO drives the module's `VDD`. Sleep in **Stop mode** (not
-  Standby) so the pin stays high.
+  Standby) so the pin stays high, with the regulator in low-power mode
+  (`LPDS=1, PDDS=0`) for 10.5 µA instead of 70.5 µA.
 - **Wake**: `/WAKE` to a wake-capable EXTI pin, falling-edge trigger, internal
   pull-up — enabled only after the power-up sequence in corner case 3.
 - **Level**: `LEVEL` to a 12-bit ADC channel, polled at 60 Hz;
@@ -208,8 +218,6 @@ proper and the LED drive electronics.
 
 - Exact bandpass corner frequencies for the bass + voice band.
 - Mic part selection: analog, IP57, top-port, micro-power, JLC-availability.
-- CH32V203 Stop-mode current: verify datasheet figure; decide whether the
-  latching-load-switch fallback is needed.
 - Log-stage topology and its temperature-compensation scheme.
 - Final wake qualification and stretch time constants.
 - Module dimensions and castellation pinout order.
