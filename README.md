@@ -6,22 +6,22 @@ MCU when the music starts.
 `soundwake` is a discrete analog circuit built around a water- and dust-resistant
 (IP57-class) analog MEMS microphone. It continuously measures the ambient sound
 pressure level (SPL) in the combined **bass + voice** band and exposes the result
-on two pins: an analog dB-scaled loudness output and an active-low wake
+on two pins: an analog loudness-envelope output and an active-low wake
 interrupt. It is designed to be the always-on watchdog subsystem of a
 battery-powered, sound-reactive product, drawing well under 350 µA while
 everything else sleeps.
 
 ## What it does
 
-- **Measures loudness, not audio.** The board outputs a slowly varying voltage
-  proportional to the current **dB SPL** — a signal an MCU ADC can poll, not a
-  raw microphone waveform. The dB conversion happens in hardware (log
-  detection), so a linear voltage step is a linear dB step and cheap ADCs read
-  it with uniform resolution across the whole loudness range.
-- **Wakes the host on loud sound.** When the in-band level exceeds ~68 dB SPL,
-  the `/WAKE` comparator drives low. The host's EXTI edge-detect latches even
-  the briefest pulse, so no hardware stretching is needed — firmware qualifies
-  the event after waking.
+- **Measures loudness, not audio.** The board outputs a slowly varying envelope
+  voltage proportional to sound amplitude — a signal an MCU ADC can poll, not a
+  raw microphone waveform. The host converts readings to dB with a `20·log10`
+  lookup at 60 fps; keeping the envelope linear keeps the analog chain down to
+  textbook blocks and eliminates the log junction's drift and unit spread.
+- **Wakes the host on loud sound.** A coarse comparator trip (~62 dB SPL)
+  drives `/WAKE` low; the host's EXTI edge-detect latches even the briefest
+  pulse, and firmware enforces the true 68 dB SPL threshold plus the
+  30–100 ms qualification after waking.
 - **Listens to music and people, ignores the wearer.** The detection band covers
   musical bass through the human voice range. Handling noise — the enclosure
   rubbing against clothing — is an explicit rejection target.
@@ -38,8 +38,8 @@ component; solders onto a carrier or headers for bench work.
 | ------- | --------- | ---------------------------------------------------------------------- |
 | `VDD`   | power     | Supply input, fed directly from a host GPIO pin (see power model below) |
 | `GND`   | power     | Ground                                                                  |
-| `LEVEL` | out       | Analog voltage, linear-in-dB, spanning 60–115 dB SPL in-band            |
-| `/WAKE` | out       | Active-low comparator output while over threshold; open-drain, host pull-up |
+| `LEVEL` | out       | Analog envelope voltage, linear-in-amplitude; full scale ≈ 115 dB SPL    |
+| `/WAKE` | out       | Active-low comparator, coarse ~62 dB SPL trip; open-drain, host pull-up  |
 
 ### Pinout / host wiring
 
@@ -59,7 +59,7 @@ flowchart LR
     end
     PWR -->|"3.3 V while driven high"| VDD
     GND --- MGND
-    LEVEL -->|"linear-in-dB, 60–115 dB SPL"| ADC
+    LEVEL -->|"linear envelope, full scale ≈ 115 dB SPL"| ADC
     WAKE -->|"open-drain, active low"| EXTI
 ```
 
@@ -72,26 +72,26 @@ flowchart LR
     VDDPAD(["VDD pad"]) --> FLT["RC supply filter +<br/>local decoupling"]
     FLT --> RAIL["quiet analog rail"]
     MIC["analog MEMS mic<br/>top-port, IP57"] --> AMP["preamp<br/>coupling caps = ~50 Hz high-pass<br/>GBW rolloff = ~4 kHz low-pass"]
-    AMP --> LOGENV["log-envelope detector<br/>rectify + log + hold, one op-amp<br/>attack ~1–5 ms, release ~100–300 ms"]
-    LOGENV --> LEVELPAD(["LEVEL pad<br/>linear-in-dB"])
-    LOGENV --> CMP["comparator<br/>68 dB SPL, hysteresis"]
+    AMP --> PKD["precision peak detector<br/>rectify + hold, one op-amp<br/>attack ~1–5 ms, release ~100–300 ms"]
+    PKD --> LEVELPAD(["LEVEL pad<br/>linear envelope"])
+    PKD --> CMP["comparator<br/>coarse ~62 dB SPL trip, hysteresis"]
     CMP --> WAKEPAD(["/WAKE pad<br/>open-drain"])
 ```
 
-After the cost-down pass (see below) the chain is deliberately minimal: three
-active ICs. The comparator taps the dB envelope, but a single fixed threshold
-is one fixed voltage in either domain, so the wake path doesn't depend on log
-accuracy. Qualification, wake stretching, and startup masking all live in host
-firmware — the EXTI pending flag latches even a nanosecond comparator blip, so
-nothing needs to hold `/WAKE` low in hardware.
+After the cost-down pass and the linear-envelope revision (see below) the
+chain is deliberately minimal: three active ICs and no math hardware at all.
+Qualification, wake stretching, startup masking, the dB conversion, and the
+exact 68 dB threshold all live in host firmware — the EXTI pending flag
+latches even a nanosecond comparator blip, so nothing needs to hold `/WAKE`
+low in hardware, and the comparator only needs to be coarsely right.
 
 ## How the analog sound processor works
 
-After the cost-down pass the processor is three analog stages plus a firmware
-tail. Sound becomes a band-limited signal (stage 1), a single op-amp stage
-turns it directly into a dB-scaled envelope (stage 2), and a comparator turns
-that envelope into the wake signal (stage 3). Everything that used to be
-timing hardware — qualification, stretching, startup masking — is firmware.
+The processor is three analog stages plus a firmware tail. Sound becomes a
+band-limited signal (stage 1), a single op-amp stage turns it into a loudness
+envelope (stage 2), and a comparator provides a coarse wake trip (stage 3).
+Everything that used to be timing or math hardware — qualification,
+stretching, startup masking, and the dB conversion itself — is firmware.
 
 ### Stage 1 — Acoustic front end: sound → band-limited signal
 
@@ -110,38 +110,40 @@ flowchart LR
     PRE -->|"band-limited audio<br/>(bass + voice)"| S1OUT(("to stage 2"))
 ```
 
-### Stage 2 — Log-envelope detector: audio → dB, one op-amp
+### Stage 2 — Precision peak detector: audio → loudness envelope
 
-Rectification, log conversion, and envelope hold merge into a single stage. A
-micropower op-amp with a junction element in its feedback conducts on signal
-peaks (rectifying), the junction's exponential I–V law makes the held voltage
-proportional to the *logarithm* of amplitude (dB), and the hold capacitor with
-its bleed sets attack (~1–5 ms, one kick registers at full height) and release
-(~100–300 ms, the level falls musically between beats). The op-amp output is
-already low-impedance, so it drives the `LEVEL` pad directly — no separate
-buffer — with the surrounding network setting scale and offset to map
-60–115 dB SPL onto the output swing. A pleasant side effect: a constant-current
-bleed in the log domain gives a constant dB-per-second release, which is how
-ears and VU meters expect loudness to decay.
+A textbook block: a micropower op-amp precision rectifier (the diode sits
+inside the feedback loop, so its drop and drift cancel) charges a hold
+capacitor through a fast path (attack ~1–5 ms, one kick registers at full
+height) while a bleed discharges it (release ~100–300 ms). Exponential decay
+in the linear domain *is* constant dB-per-second decay, so the release still
+falls musically between beats. The op-amp output is low-impedance and drives
+the `LEVEL` pad directly. No junction log element exists anywhere — the host
+computes `dB = 20·log10(reading)` from a lookup table at 60 fps, oversampling
+~16× per frame to recover quiet-end resolution.
 
 ```mermaid
 flowchart LR
-    S2IN(("band-limited<br/>audio")) --> LE["log-envelope detector<br/>op-amp + junction feedback<br/>rectify + log + hold in one"]
-    LE -->|"attack ~1–5 ms<br/>release ~100–300 ms"| HOLD["hold capacitor + bleed<br/>voltage = loudness in dB"]
-    HOLD -->|"linear-in-dB<br/>60–115 dB SPL → output swing"| LVPAD(["LEVEL pad"])
+    S2IN(("band-limited<br/>audio")) --> PR["precision rectifier<br/>op-amp, diode inside loop<br/>no drop, no drift"]
+    PR -->|"fast charge<br/>attack ~1–5 ms"| HOLD["hold capacitor + bleed<br/>voltage = loudness, linear amplitude"]
+    HOLD -->|"release ~100–300 ms<br/>= constant dB/s decay"| LVPAD(["LEVEL pad"])
     HOLD --> S2OUT(("to stage 3"))
 ```
 
-### Stage 3 — Wake comparator: dB envelope → `/WAKE`
+### Stage 3 — Wake comparator: coarse trip → `/WAKE`
 
-A nanopower comparator with hysteresis watches the dB envelope for the 68 dB
-SPL crossing and drives the open-drain `/WAKE` pad directly. There is no
-qualification, stretch, or mask hardware behind it — the host's EXTI pending
-flag latches a pulse of any width, and firmware does the judging.
+A nanopower comparator with hysteresis drives the open-drain `/WAKE` pad
+directly. Its trip is deliberately set **coarse and low (~62 dB SPL)**: at
+linear-envelope levels, 68 dB SPL is only ~15 mV, where nanopower comparator
+input offset (±3–5 mV) would smear a trip point by several dB. Set ~6 dB low,
+worst-case positive offset still cannot push the trip above 68 dB (a unit
+that can't wake would be a field failure), and negative offset merely causes
+early wakes that firmware filters. The exact 68 dB threshold is enforced in
+firmware from `LEVEL`, in dB domain, to ~±0.5 dB.
 
 ```mermaid
 flowchart LR
-    S3IN(("dB envelope")) --> CMP["nanopower comparator<br/>68 dB SPL threshold + hysteresis"]
+    S3IN(("envelope")) --> CMP["nanopower comparator<br/>coarse ~62 dB SPL trip + hysteresis"]
     CMP --> WK(["/WAKE pad<br/>open-drain, active low"])
 ```
 
@@ -156,8 +158,8 @@ stateDiagram-v2
     Settling --> Armed : ~100 ms firmware mask, then pull-up on, EXTI armed
     Armed --> Woken : comparator edge on /WAKE (EXTI latches any pulse width)
     Woken --> Qualifying : firmware samples LEVEL at 60 Hz
-    Qualifying --> Armed : not sustained 30–100 ms (scratch — back to Stop)
-    Qualifying --> Running : sustained (music confirmed — product wakes fully)
+    Qualifying --> Armed : below 68 dB or not sustained (back to Stop)
+    Qualifying --> Running : 68 dB+ sustained 30–100 ms (music confirmed)
     Running --> Armed : show over — back to Stop, EXTI re-armed
     note right of Settling : analog chain settling, nothing listening
     note right of Qualifying : the old hardware qualification window, relocated
@@ -170,11 +172,12 @@ stateDiagram-v2
 | Total supply current   | **< 350 µA**, lower is better         | Always-on while product is on; battery runtime driver    |
 | Power source           | Host GPIO pin, 3.3 V nominal          | Default-off product; GPIO ~50–100 Ω source impedance     |
 | Detection band         | ~50 Hz – 4 kHz (bass + voice)         | Exact corners TBD                                        |
-| Wake threshold         | 68 dB SPL, fixed                      | ±3–4 dB unit-to-unit accepted (mic + resistor tolerance) |
+| Wake threshold (effective) | 68 dB SPL, enforced in firmware   | ~±0.5 dB electrical + the mic's ±1–3 dB sensitivity spread |
+| Hardware wake trip     | ~62 dB SPL, coarse, fixed             | Set low so comparator offset can never push it above 68 dB |
 | Wake qualification     | ~30–100 ms sustained, in firmware     | Host wakes on comparator edge, samples `LEVEL`, decides  |
 | Wake output            | Raw comparator with hysteresis        | No stretch needed — host EXTI latches any pulse width    |
-| `LEVEL` transfer       | Linear-in-dB (hardware log detection) | 60–115 dB SPL mapped across the output swing (~55 dB)    |
-| `LEVEL` accuracy       | ±2–3 dB systematic, uncompensated     | Wearable temp swing is small; optional firmware temp trim |
+| `LEVEL` transfer       | Linear-in-amplitude envelope          | Full scale ≈ 115 dB SPL; host does `20·log10` lookup     |
+| `LEVEL` accuracy       | ~±0.5 dB above 75 dB SPL              | Quantization-limited below; 16× oversampling ⇒ ~±0.3 dB at 60 dB |
 | Envelope dynamics      | Beat-tracking: ~1–5 ms attack, ~100–300 ms release | LEDs can ride individual kicks at 60 fps    |
 | Envelope readout rate  | Valid at 60 Hz polling                | Fresh, settled values every ~16 ms                       |
 | Microphone             | Analog MEMS, IP57, **top-port**       | Part selection TBD                                       |
@@ -214,22 +217,29 @@ firmware/part traps:
 A side benefit: the GPIO's ~50–100 Ω source impedance plus the module's local
 bulk capacitance forms a free low-pass filter against rail noise.
 
-### 2. Hardware dB output (log detection)
+### 2. Linear envelope, dB in firmware (revised 2026-07-21)
 
-`LEVEL` is linear-in-dB, not linear-in-amplitude. Rationale: a dB-linear signal
-uses cheap, low-resolution ADCs efficiently — every dB gets the same number of
-counts, whereas a linear envelope wastes resolution on the loud end and drowns
-the quiet end in ADC error. The host algorithm works entirely in dB, so
-firmware just applies scale and offset.
+`LEVEL` is a linear-amplitude envelope; the host computes
+`dB = 20·log10(reading)` via lookup table at 60 fps. This **reverses** the
+interview's hardware-dB choice, which was made when the log stage looked
+free: in the discrete implementation it costs an op-amp *plus a junction
+element*, and that junction is the riskiest, least-cookbook block in the
+whole design — while removing it saves only itself, since the op-amp is
+needed for precision rectification either way.
 
-This is the hardest block to keep micro-power (commercial log amps draw mA).
-The approach is a *log-envelope detector*: one micropower op-amp with a
-junction in its feedback rectifies, log-converts, and holds in a single stage.
-The junction's scale factor drifts ~0.33 %/°C, and per the 2026-07-21
-cost-down decision it is left **uncompensated**: worn on the body, the
-realistic temperature swing is far narrower than the ambient spec, the error
-over ±10 °C is ~±1.5–2 dB, and the CH32V203's internal temperature sensor
-allows a free firmware trim if it ever matters.
+What the reversal buys and costs:
+
+- **Error classes eliminated**: junction temperature drift (was ~±1.5–2 dB
+  uncompensated) and junction unit-to-unit spread (±1–2 dB). The rectifier
+  diode sits inside the op-amp loop and cancels; gain is set by 1 % resistors
+  (±0.1 dB).
+- **Error class added**: ADC quantization at the quiet end. With full scale at
+  115 dB SPL, one 12-bit count is 0.02 dB at 95 dB, 0.2 dB at 75 dB, 1.2 dB at
+  60 dB. The LED show's working range (85–115 dB) resolves *better* than the
+  log stage delivered; firmware oversampling (~16 reads per frame) recovers
+  ~2 effective bits at the quiet end.
+- **Companion change (non-negotiable)**: the wake comparator cannot sit at
+  68 dB in the linear domain — see decision 4.
 
 ### 3. Beat-tracking envelope everywhere
 
@@ -238,24 +248,28 @@ the wake path. LEDs can pulse with individual kick drums at 60 fps. The cost —
 scratches look like kicks — is paid back by firmware time-qualification after
 wake, not by slowing the envelope.
 
-### 4. Wake path: bare comparator, qualification in firmware
+### 4. Wake path: coarse comparator, threshold and qualification in firmware
 
-A nanopower comparator with hysteresis at 68 dB SPL drives `/WAKE` directly.
-The 2026-07-21 cost-down pass removed the hardware qualification window, the
-one-shot stretch, and the hardware startup mask: the CH32V203's EXTI pending
-flag latches a comparator pulse of any width, so nothing needs to hold the
-line low, and the firmware — which had to double-check anyway — owns the
-30–100 ms sustained-energy qualification by sampling `LEVEL` after waking.
-A false wake costs on the order of 0.02 µAh; even hundreds of scratches a day
-are noise next to the detector's own always-on budget. This supersedes the
-interview's "moderate hardware strictness" choice — same behavior, relocated
-to firmware for zero parts.
+A nanopower comparator with hysteresis drives `/WAKE` directly, tripping at a
+deliberately low ~62 dB SPL. At linear-envelope levels 68 dB is only ~15 mV,
+where comparator input offset (±3–5 mV) would smear the trip by +2.5/−3.6 dB;
+sitting ~6 dB low guarantees worst-case offset can never push the trip above
+68 dB, and early trips just become cheap firmware-filtered wakes. The
+CH32V203's EXTI pending flag latches a comparator pulse of any width, so
+nothing needs to hold the line low, and firmware — which had to double-check
+anyway — enforces the true 68 dB threshold and the 30–100 ms sustained-energy
+qualification by sampling `LEVEL` after waking. A false wake costs on the
+order of 0.02 µAh; even hundreds of scratches a day are noise next to the
+detector's own always-on budget. This supersedes the interview's "moderate
+hardware strictness" choice — same behavior, relocated to firmware for zero
+parts.
 
 ### 5. Fixed threshold
 
-No trim. One resistor divider sets 68 dB; ±3–4 dB unit-to-unit spread from mic
-sensitivity and resistor tolerance is accepted. "About 68 dB" is the spirit of
-the spec.
+No trim. One resistor divider sets the coarse hardware trip; the exact 68 dB
+is a firmware constant applied to `LEVEL` in dB domain, so unit-to-unit spread
+collapses to the mic's own ±1–3 dB sensitivity tolerance — tighter than the
+±3–4 dB originally accepted.
 
 ### 6. Top-port mic on an open, conformal-coated board
 
@@ -284,19 +298,21 @@ board area, and assembly simplicity. Eliminated:
 
 | Eliminated                                    | Function now provided by                                   | Accuracy price                                        |
 | --------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------- |
-| Temperature-compensation network              | Nothing; optional firmware trim via MCU internal temp sensor | ~±1.5–2 dB over the realistic wearable temp swing    |
+| Temperature-compensation network              | Moot — the linear-envelope revision removed the drifting junction entirely | None remaining                          |
 | Hardware qualification window + one-shot stretch | EXTI pending-flag latch + firmware qualification         | None — behavior relocated, not removed                 |
 | Hardware startup mask                         | Firmware delay before arming EXTI                           | None                                                   |
-| Separate rectifier, log, and envelope stages  | Single log-envelope detector op-amp                         | ~1–2 dB program-dependent (half-wave, crest factor)    |
+| Separate rectifier and envelope stages        | Single precision peak-detector op-amp                       | ~1–2 dB program-dependent (half-wave, crest factor)    |
+| Log-conversion junction (analog dB output)    | Firmware `20·log10` lookup on 60 fps ADC samples            | Quantization below ~75 dB SPL; oversampling recovers most |
 | Dedicated `LEVEL` output buffer               | Log op-amp output is already low-impedance                  | Negligible at 60 Hz ADC sampling                       |
 | Active bandpass filter stages                 | Coupling caps (high-pass) + preamp GBW rolloff (low-pass)   | Soft band edges; a few % level error at band extremes  |
 | Ferrite bead in supply filter                 | GPIO source impedance + RC + local decoupling               | None expected; verify on first prototype               |
 
 Resulting active BOM: the mic, one dual-or-quad micropower op-amp package
-(preamp channels + log-envelope), and one nanopower comparator — **three ICs
+(preamp channels + peak detector), and one nanopower comparator — **three ICs
 plus roughly a dozen passives**, projected parts cost ~$2–3 against the $4
-target. Systematic accuracy lands at roughly ±2–3 dB on top of the already
-accepted ±3–4 dB unit-to-unit spread.
+target. After the linear-envelope revision, electrical accuracy is ~±0.5 dB
+across the loud range that matters; absolute accuracy is dominated by the
+mic's ±1–3 dB sensitivity spread.
 
 ## Corner-case register
 
@@ -328,16 +344,26 @@ The failure modes the design must explicitly handle:
    keep them below the equivalent of the quietest resolvable dB step.
 8. **Conformal coat vs. mic port** — one masking mistake mutes the product;
    this is a named assembly-process requirement, not a hope.
-9. **dB-scale temperature drift** — the log stage's mV/dB slope moves
-   ~0.33 %/°C and is deliberately uncompensated (cost-down decision). Body-worn
-   use keeps the realistic swing near ±10 °C ⇒ ~±1.5–2 dB; firmware may trim
-   using the MCU's internal temperature sensor if it ever matters.
-10. **Threshold tolerance stack-up** — mic sensitivity (±1–3 dB) + divider
-    tolerance ⇒ ±3–4 dB unit spread on the 68 dB trip point; accepted by
-    decision 5, but the stack-up must be verified in design review.
+9. **dB-scale temperature drift** — *eliminated* by the linear-envelope
+   revision: the rectifier diode sits inside the op-amp's feedback loop and
+   cancels, and no log junction remains to drift.
+10. **Threshold tolerance stack-up** — the effective 68 dB threshold is a
+    firmware constant applied to `LEVEL`, so unit spread collapses to the
+    mic's ±1–3 dB sensitivity tolerance; the coarse hardware trip absorbs its
+    own ±3 dB of slop harmlessly (see corner case 12).
 11. **GPIO rail droop** — the detector's current transients through the GPIO's
     source impedance modulate its own rail; local bulk capacitance must be
     sized so droop never reaches the analog references.
+12. **Comparator offset at millivolt trip levels** — at linear-envelope
+    levels, 68 dB SPL is ~15 mV, where nanopower comparator input offset
+    (±3–5 mV) smears a trip point by several dB. The hardware trip therefore
+    sits ~6 dB low (~62 dB ⇒ ~7 mV): worst-case positive offset still cannot
+    push the trip above 68 dB (a unit that can't wake is a field failure),
+    and negative offset only causes early wakes that firmware filters.
+13. **`LEVEL` quantization at the quiet end** — below ~75 dB SPL a single
+    12-bit read is coarser than 0.2 dB/count (1.2 dB at 60 dB). Firmware
+    oversamples ~16× per 60 fps frame for ~2 extra effective bits; the LED
+    show's 85–115 dB working range is unaffected.
 
 ## Host MCU integration (reference: WCH CH32V203)
 
@@ -371,11 +397,12 @@ Two firmware nuances:
   (`LPDS=1, PDDS=0`) for 10.5 µA instead of 70.5 µA.
 - **Wake**: `/WAKE` to a wake-capable EXTI pin, falling-edge trigger, internal
   pull-up — enabled only after the power-up sequence in corner case 3.
-- **Level**: `LEVEL` to a 12-bit ADC channel, polled at 60 Hz;
-  `dB = scale × ADC + offset` with constants from the module datasheet
-  (optionally temperature-corrected per corner case 9).
-- **Wake qualification (firmware)**: on EXTI wake, sample `LEVEL` at 60 Hz for
-  30–100 ms; if the loudness isn't sustained, return to Stop immediately.
+- **Level**: `LEVEL` to a 12-bit ADC channel, polled at 60 Hz with ~16×
+  oversampling per frame; `dB = 20·log10(reading) + offset` via a small
+  lookup table. No temperature correction needed.
+- **Wake qualification (firmware)**: on EXTI wake, sample `LEVEL` for
+  30–100 ms and apply the true 68 dB threshold in dB domain; if the loudness
+  isn't sustained above it, return to Stop immediately.
 
 ## Planned deliverables
 
@@ -383,7 +410,7 @@ Two firmware nuances:
 
 - KiCad project: schematic, layout, fab outputs, checked into this repo.
 - SPICE simulation of the mic-to-outputs chain: filter corners, envelope
-  timing, dB linearity, threshold/qualification behavior.
+  timing, envelope linearity, threshold/trip behavior.
 - Bench validation test plan: reference tones at known dB SPL, rub-noise
   reproduction, supply-current measurement, threshold verification.
 - Firmware integration notes with a CH32V203 example: Stop-mode config, EXTI
@@ -402,13 +429,16 @@ proper and the LED drive electronics.
 
 - Exact bandpass corner frequencies for the bass + voice band.
 - Mic part selection: analog, IP57, top-port, micro-power, JLC-availability.
-- Log-envelope stage topology: junction choice, attack/release network, and
-  the realized dB scale factor.
+- Peak-detector attack/release network values and the realized full-scale
+  calibration constant (which SPL hits ADC full scale).
+- Comparator part choice — the input-offset spec sets how low the coarse trip
+  must sit.
 - Firmware qualification window tuning (within 30–100 ms) and EXTI re-arm
   policy.
 - Module dimensions and castellation pinout order.
 
 ## Status
 
-Requirements fleshed out via design interview and cost-down pass (2026-07-21).
-Next: mic part selection and a stage-by-stage current budget.
+Requirements fleshed out via design interview, cost-down pass, and
+linear-envelope revision (2026-07-21). Next: mic part selection and a
+stage-by-stage current budget.
