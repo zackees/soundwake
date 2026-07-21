@@ -161,11 +161,11 @@ power-up.
 stateDiagram-v2
     [*] --> Masked : power applied on VDD pad
     Masked --> Armed : startup mask ~100 ms elapsed
-    Armed --> Qualifying : envelope crosses 68 dB SPL<br/>(comparator with hysteresis)
-    Qualifying --> Armed : drops below threshold too soon<br/>(scratch rejected)
-    Qualifying --> Asserted : sustained 30–100 ms<br/>(music confirmed)
-    Asserted --> Asserted : still above threshold<br/>(retrigger, stays low)
-    Asserted --> Armed : quiet and ~100 ms stretch elapsed<br/>(/WAKE releases)
+    Armed --> Qualifying : envelope crosses 68 dB SPL (comparator with hysteresis)
+    Qualifying --> Armed : drops below threshold too soon (scratch rejected)
+    Qualifying --> Asserted : sustained 30–100 ms (music confirmed)
+    Asserted --> Asserted : still above threshold (retrigger, stays low)
+    Asserted --> Armed : quiet and ~100 ms stretch elapsed (/WAKE releases)
     note right of Masked : /WAKE held released while analog chain settles
     note right of Asserted : /WAKE driven low (open-drain)
 ```
