@@ -40,6 +40,52 @@ component; solders onto a carrier or headers for bench work.
 | `LEVEL` | out       | Analog voltage, linear-in-dB, spanning 60–115 dB SPL in-band            |
 | `/WAKE` | out       | Active-low one-shot wake pulse; open-drain, host provides the pull-up   |
 
+### Pinout / host wiring
+
+```mermaid
+flowchart LR
+    subgraph MOD["soundwake module (castellated pads)"]
+        VDD["VDD"]
+        GND["GND"]
+        LEVEL["LEVEL"]
+        WAKE["/WAKE"]
+    end
+    subgraph MCU["CH32V203 host"]
+        PWR["GPIO output<br/>power + enable"]
+        MGND["GND"]
+        ADC["ADC channel<br/>12-bit, polled at 60 Hz"]
+        EXTI["EXTI pin<br/>falling edge, internal pull-up"]
+    end
+    PWR -->|"3.3 V while driven high"| VDD
+    GND --- MGND
+    LEVEL -->|"linear-in-dB, 60–115 dB SPL"| ADC
+    WAKE -->|"open-drain, active low"| EXTI
+```
+
+Physical pad order and module dimensions are still open (see open questions).
+
+### Block diagram — behind the pads
+
+```mermaid
+flowchart LR
+    VDDPAD(["VDD pad"]) --> FLT["RC/ferrite filter +<br/>local decoupling"]
+    FLT --> RAIL["quiet analog rail"]
+    MIC["analog MEMS mic<br/>top-port, IP57"] --> AMP["preamp"]
+    AMP --> BPF["bandpass<br/>~50 Hz – 4 kHz"]
+    BPF --> ENV["envelope detector<br/>attack ~1–5 ms<br/>release ~100–300 ms"]
+    ENV --> LOG["log stage<br/>amplitude → dB"]
+    LOG --> BUF["output buffer"]
+    BUF --> LEVELPAD(["LEVEL pad"])
+    ENV --> CMP["comparator<br/>68 dB SPL, hysteresis"]
+    CMP --> QUAL["qualification<br/>30–100 ms sustained"]
+    QUAL --> OS["one-shot stretch<br/>~100 ms + startup mask"]
+    OS --> WAKEPAD(["/WAKE pad<br/>open-drain"])
+```
+
+The wake comparator taps the envelope *before* the log stage — a single fixed
+threshold is one fixed voltage either way, so the wake path doesn't depend on
+log accuracy. The startup mask (corner case 2) lives in the one-shot block.
+
 ## Target specifications
 
 | Parameter              | Target                                | Notes                                                    |
