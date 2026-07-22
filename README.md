@@ -197,7 +197,7 @@ stateDiagram-v2
 | Parameter              | Target                                | Notes                                                    |
 | ---------------------- | ------------------------------------- | -------------------------------------------------------- |
 | Total supply current   | **< 350 µA** budget; ~80–110 µA projected | Mic dominates; see current budget section            |
-| Power source           | Host GPIO pin, 3.3 V nominal          | Default-off product; GPIO ~50–100 Ω source impedance     |
+| Power source           | Host GPIO pin, 3.0–3.3 V              | Reference host rail is a 3.0 V LDO; scaling is ratiometric |
 | Detection band         | ~50 Hz – 4 kHz (bass + voice)         | Exact corners TBD                                        |
 | Wake threshold (effective) | 68 dB SPL, enforced in firmware   | ~±0.5 dB electrical + the mic's ±1–3 dB sensitivity spread |
 | Hardware wake trip     | ~62 dB SPL, coarse, fixed             | Set low so comparator offset can never push it above 68 dB |
