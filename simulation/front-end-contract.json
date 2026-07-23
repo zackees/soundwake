@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "microphone": "PUI AMM-2742-T-WP-R datasheet; TODO(#92-review): import vendor small-signal model",
+    "mic_ldo": "XC6206P202 datasheet; TODO(#92-review): verify dropout and PSRR at the selected capacitor/load",
+    "op_amp": "MCP6144 datasheet; TODO(#92-review): import final macro-model and output-swing/load limits",
+    "passives": "TODO(#92-review): freeze tolerance/voltage-coefficient/temperature data after schematic review"
+  },
+  "corners": {
+    "host_rail_v": [2.8, 3.3],
+    "temperature_c": [-10, 25, 45],
+    "passive_tolerance": 0.01,
+    "mic_sensitivity_dbv": [-43.0, -42.0, -41.0]
+  },
+  "mic_rail": {
+    "target_v": 2.0,
+    "dropout_max_v": 0.10,
+    "load_max_a": 0.0002,
+    "post_ldo_r_ohm": 330.0,
+    "post_ldo_c_f": 0.00001,
+    "minimum_pin_v": 1.9
+  },
+  "front_end": {
+    "preamp_rg_ohm": 100000.0,
+    "preamp_rf_ohm": 698000.0,
+    "preamp_cf_f": 0.000000000056,
+    "coupling_r_ohm": 33000.0,
+    "coupling_c_f": 0.0000001,
+    "preamp_bias_fraction": 0.5,
+    "full_scale_spl_db": 112.0,
+    "microphone_peak_v_at_full_scale": 0.09,
+    "preamp_required_rail_margin_v": 0.30
+  },
+  "nodes": {
+    "MIC_2V0": "post-LDO microphone supply; test point TP_MIC_2V0",
+    "MIC_OUT": "microphone AC output before coupling; test point TP_MIC_OUT",
+    "PREAMP_BIAS": "host-rail-derived preamp mid-bias; test point TP_PREAMP_BIAS",
+    "PREAMP_OUT": "50 Hz to 4 kHz raw-audio tap; test point TP_PREAMP_OUT",
+    "LEVEL": "downstream envelope/raw-mux output to host ADC"
+  }
+}
