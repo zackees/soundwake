@@ -150,6 +150,13 @@ named analog nodes and required test points that the KiCad schematic must
 preserve. This calculation is not a substitute for the selected op-amp
 macro-model, SPL calibration, or prototype measurements.
 
+The envelope, `/WAKE`, and `/RAW` output contract is independently checked
+with:
+
+```powershell
+python simulation/check_envelope_output.py
+```
+
 ### Stage 2 — Precision peak detector: audio → loudness envelope
 
 A gain-configured micropower precision rectifier (gain = **3.05×**; the diode sits

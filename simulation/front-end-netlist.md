@@ -12,7 +12,9 @@ TODO with a KiCad reference; it does not replace that schematic.
 | `PREAMP_BIAS` | MCP6144 non-inverting bias network | `TP_PREAMP_BIAS` |
 | `PREAMP_OUT` | MCP6144 preamp output, 50 Hz-4 kHz raw tap, precision-rectifier input | `TP_PREAMP_OUT` |
 | `LEVEL_ENVELOPE` | Precision rectifier hold/release output | `TP_LEVEL_ENVELOPE` |
-| `LEVEL` | Downstream mux output to host ADC | `TP_LEVEL` |
+| `WAKE_N` | TLV9021 open-drain wake output | `TP_WAKE_N` |
+| `RAW_N` | Host open-drain request; low selects raw audio | `TP_RAW_N` |
+| `LEVEL` | 74LVC1G3157 mux output to host ADC | `TP_LEVEL` |
 
 ## Frozen calculation values
 
@@ -29,3 +31,8 @@ Run `python simulation/check_front_end.py` before changing any value. The
 checker validates rail feasibility, passive corners, preamp headroom, and the
 required named nodes. It is an electrical calculation, not a microphone SPL or
 coating qualification; those are bench exits in FastLED/soundwave#45.
+
+The downstream envelope, wake, and mux contract is checked separately with
+`python simulation/check_envelope_output.py`. It verifies the declared attack,
+release, envelope swing, comparator offset/hysteresis margin, open-drain high
+level, and raw-mode settling/discard invariants.
