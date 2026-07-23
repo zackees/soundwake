@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "rectifier": "MCP6144 datasheet; TODO(#93-review): validate diode and macro-model transient behavior",
+    "comparator": "TLV9021 datasheet; TODO(#93-review): freeze divider/hysteresis values in KiCad",
+    "mux": "74LVC1G3157 datasheet; TODO(#93-review): verify final source/load leakage and capacitance"
+  },
+  "corners": {"host_rail_v": [2.8, 3.3], "temperature_c": [-10, 25, 45], "passive_tolerance": 0.01},
+  "envelope": {"gain": 3.05, "full_scale_input_peak_v": 0.7182, "maximum_output_v": 2.2, "attack_tau_s": 0.002, "release_tau_s": 0.2},
+  "wake": {"nominal_trip_v": 0.00693, "offset_max_v": 0.002, "hysteresis_v": 0.001, "firmware_68db_min_v": 0.0138, "pullup_ohm": 100000.0, "off_leakage_max_a": 0.000001},
+  "mux": {"on_resistance_max_ohm": 20.0, "load_cap_f": 0.00000000001, "source_impedance_max_ohm": 10000.0, "settle_max_s": 0.001, "host_discard_s": 0.003, "off_leakage_max_a": 0.000001},
+  "nodes": {"LEVEL_ENVELOPE": "rectifier hold output; TP_LEVEL_ENVELOPE", "WAKE_N": "TLV9021 open-drain output; TP_WAKE_N", "RAW_N": "host open-drain mux request", "LEVEL": "mux output to host ADC; TP_LEVEL"}
+}
