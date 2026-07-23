@@ -157,11 +157,11 @@ flowchart LR
 
 ### Stage 3 — Wake comparator: coarse trip → `/WAKE`
 
-A nanopower comparator with hysteresis drives the open-drain `/WAKE` pad
-directly. Its trip is deliberately set **coarse and low (~62 dB SPL)**: at
-linear-envelope levels, 68 dB SPL is only ~14 mV, where nanopower comparator
-input offset (±3–5 mV) would smear a trip point by several dB. Set ~6 dB low,
-worst-case positive offset still cannot push the trip above 68 dB (a unit
+A precision low-power comparator with hysteresis drives the open-drain
+`/WAKE` pad directly. Its trip is deliberately set **coarse and low (~62 dB
+SPL)**: at linear-envelope levels, 68 dB SPL is only ~14 mV, so the selected
+TLV9021's +/-2 mV maximum offset is a material safety bound. Set ~6 dB low,
+and worst-case positive offset still cannot push the trip above 68 dB (a unit
 that can't wake would be a field failure), and negative offset merely causes
 early wakes that firmware filters. The threshold divider references the
 **absolute 2.0 V mic rail, not VDD** — so the trip point does not move when
@@ -171,7 +171,7 @@ the host rail steps between 2.5 V and 3.3 V (see decision 10). The exact
 
 ```mermaid
 flowchart LR
-    S3IN(("envelope")) --> CMP["nanopower comparator<br/>coarse ~62 dB SPL trip + hysteresis"]
+    S3IN(("envelope")) --> CMP["precision low-power comparator<br/>coarse ~62 dB SPL trip + hysteresis"]
     CMP --> WK(["/WAKE pad<br/>open-drain, active low"])
 ```
 
@@ -208,7 +208,7 @@ stateDiagram-v2
 
 | Parameter              | Target                                | Notes                                                    |
 | ---------------------- | ------------------------------------- | -------------------------------------------------------- |
-| Total supply current   | **< 350 µA** budget; ~210–250 µA projected | Mic's 200 µA max dominates (no typical published); see current budget |
+| Total supply current   | **< 350 µA** budget; ~226–266 µA projected | Mic's 200 µA max dominates (no typical published); see current budget |
 | Power source           | Host GPIO pin, **2.5–3.3 V** dual-level | 2.5 V on battery, ~3.3 V on USB (host #50/#51); envelope + trip are absolute, not ratiometric |
 | Detection band         | ~50 Hz – 4 kHz (bass + voice)         | Exact corners TBD                                        |
 | Wake threshold (effective) | 68 dB SPL, enforced in firmware   | ~±0.5 dB electrical + the mic's ±1–3 dB sensitivity spread |
@@ -290,11 +290,12 @@ wake, not by slowing the envelope.
 
 ### 4. Wake path: coarse comparator, threshold and qualification in firmware
 
-A nanopower comparator with hysteresis drives `/WAKE` directly, tripping at a
-deliberately low ~62 dB SPL. At linear-envelope levels 68 dB is only ~14 mV,
-where comparator input offset (±3–5 mV) would smear the trip by +2.5/−3.6 dB;
-sitting ~6 dB low guarantees worst-case offset can never push the trip above
-68 dB, and early trips just become cheap firmware-filtered wakes. The
+A precision low-power comparator with hysteresis drives `/WAKE` directly,
+tripping at a deliberately low ~62 dB SPL. At linear-envelope levels 68 dB is
+only ~14 mV, so the selected TLV9021's guaranteed +/-2 mV input offset gives
+a worst-case high trip of about 64.2 dB. Sitting ~6 dB low therefore keeps the
+hardware trip safely below 68 dB, and early trips just become cheap
+firmware-filtered wakes. The
 CH32V203's EXTI pending flag latches a comparator pulse of any width, so
 nothing needs to hold the line low, and firmware — which had to double-check
 anyway — enforces the true 68 dB threshold and the 30–100 ms sustained-energy
@@ -393,7 +394,8 @@ present**, instead of a fixed 3.0 V. Three module-side consequences
   rail-independent — a VDD-referenced divider would ride the rail up
   +2.4 dB at 3.3 V, and stacked with worst-case comparator offset the
   effective trip would graze 68 dB, violating decision 4's bound. With
-  the absolute reference the worst case stays ≈ 66.7 dB at both rail
+  the absolute reference and TLV9021's +/-2 mV maximum offset, the worst
+  case is ≈64.2 dB at both rail
   levels.
 - **Envelope full scale is ~112 dB SPL.** A single 25× mid-rail preamp would
   require a ±2.2 V swing and cannot work on either host rail. The realised
@@ -429,7 +431,7 @@ board area, and assembly simplicity. Eliminated:
 | Ferrite bead in supply filter                 | GPIO source impedance + RC + local decoupling               | None expected; verify on first prototype               |
 
 Resulting active BOM: the mic, one dual-or-quad micropower op-amp package
-(preamp channels + peak detector), one nanopower comparator, and the
+(preamp channels + peak detector), one precision low-power comparator, and the
 direct-mode 2:1 mux — **four ICs plus roughly a dozen passives**, projected
 parts cost ~$2–3 against the $4 target. After the linear-envelope revision, electrical accuracy is ~±0.5 dB
 across the loud range that matters; absolute accuracy is dominated by the
@@ -481,21 +483,22 @@ string is the schematic-time cost-down alternative).
 | Mic (budgeted at max) | 200 | No typical published; PUI's max is the planning number |
 | Mic-rail micro-LDO | ~1–3 | XC6206P202-class IQ |
 | Quad op-amp (4 ch) | 2.4 – 40 | MCP6144-class 0.6 µA/ch ↔ TLV9044-class 10 µA/ch |
-| Comparator (TLV7041-class) | ~0.3 | Plus ~1 µA threshold divider (off the 2.0 V rail) |
+| Comparator (TLV9021) | 16 | Guaranteed +/-2 mV offset across -40 to +125 C; plus ~1 µA threshold divider (off the 2.0 V rail) |
 | Analog mux (74LVC1G3157) | ~0.1 | Static |
 | Dividers, bleeds, bias strings | ~5 | High-value resistors throughout |
-| **Total** | **~210–250 µA** | **≤ ~260 µA worst-case — within the 350 µA budget, mic-dominated** |
+| **Total** | **~226–266 µA** | **≤ ~276 µA worst-case — within the 350 µA budget, mic-dominated** |
 
 On the product's 40 mAh cell the listening state (module + host Stop mode
-≈ 220–260 µA) runs ~6–8 days — see the host power-state table. Op-amp
+≈ 236–276 µA) runs ~6–7 days — see the host power-state table. Op-amp
 trade to settle at schematic time: MCP614x (0.6 µA/ch, 100 kHz GBW —
 gain-25 puts the rolloff corner right at ~4 kHz naturally) vs TLV904x
 (10 µA/ch, 350 kHz — quieter and stronger drive, needs a feedback cap for
 the corner). Noise analysis says either is fine for ±0.5 dB envelope
 accuracy; LCSC stock and price likely decide. Comparator note: the BOM's
 earlier TLV3701 pick has a **2.5 V minimum supply — zero margin at the
-battery-side rail**; the open-drain TLV7041 (1.6–6.5 V) replaces it, offset
-spec to verify against the decision-4 margin at schematic time.
+battery-side rail**. The selected open-drain TLV9021 operates from 1.65 V,
+leaving >=750 mV margin to the host's 2.4 V VDD floor, and its guaranteed
+ +/-2 mV offset holds the ~62 dB trip below 68 dB across temperature.
 
 ## Corner-case register
 
@@ -538,11 +541,10 @@ The failure modes the design must explicitly handle:
     source impedance modulate its own rail; local bulk capacitance must be
     sized so droop never reaches the analog references.
 12. **Comparator offset at millivolt trip levels** — at linear-envelope
-    levels, 68 dB SPL is ~14 mV, where nanopower comparator input offset
-    (±3–5 mV) smears a trip point by several dB. The hardware trip therefore
-    sits ~6 dB low (~62 dB ⇒ ~7 mV): worst-case positive offset still cannot
-    push the trip above 68 dB (a unit that can't wake is a field failure),
-    and negative offset only causes early wakes that firmware filters. The
+    levels, 68 dB SPL is ~14 mV. The selected TLV9021's +/-2 mV maximum
+    offset gives a ~64.2 dB worst-case high trip when the hardware threshold
+    is set near 62 dB (~7 mV), safely below the 68 dB no-missed-wake bound.
+    Negative offset only causes a cheap, firmware-filtered false wake. The
     trip divider references the absolute 2.0 V rail (decision 10), so this
     margin holds at both host rail levels.
 13. **`LEVEL` quantization at the quiet end** — below ~75 dB SPL a single
@@ -579,7 +581,7 @@ three system states with no extra hardware:
 
 | State | MCU mode | Power GPIO | System draw | What wakes it |
 | --- | --- | --- | --- | --- |
-| **Listening** | Stop (`LPDS=1`) | driven high | ~10.5 µA + detector (~210–250 µA, ≤350 budget) | Sound via `/WAKE` EXTI (~76 µs), or any other EXTI/RTC |
+| **Listening** | Stop (`LPDS=1`) | driven high | ~10.5 µA + detector (~226–266 µA, ≤350 budget) | Sound via `/WAKE` EXTI (~76 µs), or any other EXTI/RTC |
 | **Detector off, MCU napping** | Stop (`LPDS=1`) | driven low | ~10.5 µA | RTC alarm or other EXTI — e.g. periodic wake to decide whether to re-arm the mic |
 | **Full off / shipping** | Standby | floats (automatic) | ~0.5–1.1 µA | Only WKUP pin, RTC alarm, or reset — **not sound** |
 
@@ -650,9 +652,10 @@ board integrating this module) lives in the companion repo
   mic-rail buffer channel is freed by the LDO).
 - Mic-rail micro-LDO SKU: XC6206P202-class 2.0 V — confirm LCSC listing,
   IQ, and dropout at 200 µA.
-- Comparator: TLV7041 (open-drain, 1.6–6.5 V) replaces the BOM's TLV3701
-  (2.5 V minimum — no margin at the battery-side rail); verify its offset
-  spec against the decision-4 trip margin and confirm the LCSC number.
+- Comparator: TI `TLV9021DCKR` (open-drain, 1.65–5.5 V, `C22433207`) replaces
+  the BOM's TLV3701 (2.5 V minimum — no margin at the battery-side rail).
+  Its guaranteed +/-2 mV offset protects the decision-4 trip margin; validate
+  the chosen external hysteresis and real trip point on hardware.
 - Peak-detector attack/release network values and the realized full-scale
   calibration constant (which SPL hits ADC full scale — target ~112 dB).
 - Analog mux part choice for direct mode (on-resistance, leakage, JLC stock)
@@ -674,5 +677,5 @@ the leather-construction environmental baseline (#15): mic changed to the
 top-port PUI AMM-2742-T-WP-R, mic rail and trip reference moved to an
 absolute 2.0 V micro-LDO, envelope full scale set to ~112 dB SPL, current
 budget rebuilt around the mic's 200 µA max, comparator direction changed to
-TLV7041. Next: schematic capture and SPICE validation of the analog chain
+TLV9021. Next: schematic capture and SPICE validation of the analog chain
 per the revised numbers.
