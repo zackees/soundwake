@@ -65,7 +65,7 @@ flowchart LR
         EXTI["EXTI pin<br/>falling edge, internal pull-up"]
         RREQ["GPIO, open-drain<br/>direct-mode request"]
     end
-    PWR -->|"host rail while driven high:<br/>2.5 V battery / ~3.3 V USB"| VDD
+    PWR -->|"host rail while driven high:<br/>2.8 V battery / ~3.3 V USB"| VDD
     GND --- MGND
     LEVEL -->|"envelope (default) or raw audio"| ADC
     WAKE -->|"open-drain, active low"| EXTI
@@ -116,8 +116,9 @@ inter-stage coupling capacitors do double duty as the ~50 Hz high-pass (two
 cascaded coupling networks give a second-order corner for free), shedding
 rumble and the deepest clothing-rub energy. The micropower preamp is
 deliberately limited to **7.98×**. The mic's −42 dBV sensitivity puts 112 dB
-SPL at roughly 90 mV peak, so this stage centred at 1.25 V on the 2.5 V rail
-produces 0.532–1.968 V. The remaining gain is in the ground-referenced
+SPL at roughly 90 mV peak, so this stage centred at 1.40 V on the 2.8 V
+battery rail produces 0.682–2.118 V (with additional headroom at 3.3 V USB).
+The remaining gain is in the ground-referenced
 precision rectifier, where the signal only has to move from 0 V to the 2.2 V
 envelope full scale. This replaces the impossible old “25× around mid-rail”
 allocation; see [`simulation/gain-split.md`](simulation/gain-split.md).
@@ -134,6 +135,20 @@ flowchart LR
     ACC --> PRE["micropower preamp<br/>gain = 7.98x<br/>56 pF feedback cap = ~4.1 kHz low-pass"]
     PRE -->|"band-limited audio<br/>(bass + voice)"| S1OUT(("to stage 2"))
 ```
+
+The executable pre-schematic contract is in
+[`simulation/front-end-contract.json`](simulation/front-end-contract.json).
+Run its deterministic rail, passive-corner, gain/headroom, and named-node gate
+with:
+
+```powershell
+python simulation/check_front_end.py
+```
+
+[`simulation/front-end-netlist.md`](simulation/front-end-netlist.md) lists the
+named analog nodes and required test points that the KiCad schematic must
+preserve. This calculation is not a substitute for the selected op-amp
+macro-model, SPL calibration, or prototype measurements.
 
 ### Stage 2 — Precision peak detector: audio → loudness envelope
 
@@ -165,7 +180,7 @@ and worst-case positive offset still cannot push the trip above 68 dB (a unit
 that can't wake would be a field failure), and negative offset merely causes
 early wakes that firmware filters. The threshold divider references the
 **absolute 2.0 V mic rail, not VDD** — so the trip point does not move when
-the host rail steps between 2.5 V and 3.3 V (see decision 10). The exact
+the host rail steps between 2.8 V and 3.3 V (see decision 10). The exact
 68 dB threshold is enforced in firmware from `LEVEL`, in dB domain, to
 ~±0.5 dB.
 
@@ -209,7 +224,7 @@ stateDiagram-v2
 | Parameter              | Target                                | Notes                                                    |
 | ---------------------- | ------------------------------------- | -------------------------------------------------------- |
 | Total supply current   | **< 350 µA** budget; ~226–266 µA projected | Mic's 200 µA max dominates (no typical published); see current budget |
-| Power source           | Host GPIO pin, **2.5–3.3 V** dual-level | 2.5 V on battery, ~3.3 V on USB (host #50/#51); envelope + trip are absolute, not ratiometric |
+| Power source           | Host GPIO pin, **2.8–3.3 V** dual-level | 2.8 V on battery, ~3.3 V on USB; envelope + trip are absolute, not ratiometric |
 | Detection band         | ~50 Hz – 4 kHz (bass + voice)         | Exact corners TBD                                        |
 | Wake threshold (effective) | 68 dB SPL, enforced in firmware   | ~±0.5 dB electrical + the mic's ±1–3 dB sensitivity spread |
 | Hardware wake trip     | ~62 dB SPL, coarse, fixed             | Set low so comparator offset can never push it above 68 dB |
@@ -376,7 +391,7 @@ the 60 Hz `LEVEL` interface that works with any host.
 
 The host's issue-#50 interference analysis restructured its power tree
 ([soundwave#51](https://github.com/FastLED/soundwave/pull/51)): the rail
-feeding this module is now **2.5 V on battery and ~3.3 V while USB is
+feeding this module is now **2.8 V on battery and ~3.3 V while USB is
 present**, instead of a fixed 3.0 V. Three module-side consequences
 (tracked as [#15](https://github.com/zackees/soundwake/issues/15)):
 
@@ -401,14 +416,14 @@ present**, instead of a fixed 3.0 V. Three module-side consequences
   require a ±2.2 V swing and cannot work on either host rail. The realised
   design is a 7.98× mid-rail preamp followed by a 3.05× ground-referenced
   precision rectifier: at 112 dB it produces a 2.19 V envelope while the
-  preamp remains at 0.532–1.968 V on the 2.5 V corner. A 56 pF feedback
+  preamp remains at 0.682–2.118 V on the 2.8 V corner. A 56 pF feedback
   capacitor restores the 4.1 kHz low-pass corner that the original gain-25
   GBW rolloff had supplied. The ~62 dB coarse trip remains ~6.9 mV; sounds
   above 112 dB saturate gracefully at the envelope output.
 
 One residual ratiometric surface remains, owned by host firmware: the
 host's ADC reference is its own rail, so the absolute envelope reads in
-different counts at 2.5 V vs 3.3 V — the host swaps VDDA scale constants
+different counts at 2.8 V vs 3.3 V — the host swaps VDDA scale constants
 on VBUS transitions (soundwave#52).
 
 ## Cost-down pass (2026-07-21)
@@ -464,12 +479,12 @@ IM73A135V01). Datasheet figures:
 
 ### Rail plan
 
-Everything runs on the 2.5–3.3 V GPIO-fed rail **except the mic and the
+Everything runs on the 2.8–3.3 V GPIO-fed rail **except the mic and the
 trip reference**, which get an absolute **2.0 V rail from a micro-LDO**
 (XC6206P202-class, ~1 µA IQ) followed by an RC filter at the mic pin — see
-decision 10. The LDO input is the module's filtered rail; its dropout at
-200 µA is millivolt-class, so 2.0 V holds even at the 2.5 V battery-side
-rail corner. The old buffered-divider implementation is retired (it was
+decision 10. The LDO input is the module's filtered rail; the 2.8 V
+battery-side corner leaves 0.8 V of LDO input headroom at the 200 µA maximum
+microphone load. The old buffered-divider implementation is retired (it was
 ratiometric); its op-amp channel is freed.
 
 ### Current budget
@@ -560,11 +575,11 @@ The failure modes the design must explicitly handle:
 15. **Mic supply integrity** — the PUI part has no mode windows or 3.0 V
     trap (operating 1.6–3.6 V, 4 V absolute max, 2.0 V rated), which retires
     the IM73-era mode-window risk. What remains: the 2.0 V micro-LDO must
-    stay in regulation at the 2.5 V rail corner (millivolt-class dropout at
+stay in regulation at the 2.8 V rail corner (millivolt-class dropout at
     200 µA — verify the selected part), and the post-LDO RC's voltage drop
     at the mic's real draw must not push the mic pin below ~1.9 V. A test
     point on the mic rail is a layout requirement (host accepted-risk #1).
-16. **Host rail steps 2.5 ↔ 3.3 V on USB attach/detach** — the envelope and
+16. **Host rail steps 2.8 ↔ 3.3 V on USB attach/detach** — the envelope and
     trip are absolute (decision 10), so detection behavior doesn't move; but
     the host's ADC reference is its rail, so `LEVEL` counts rescale. Host
     firmware swaps VDDA constants on VBUS transitions and discards samples
@@ -659,7 +674,7 @@ board integrating this module) lives in the companion repo
 - Peak-detector attack/release network values and the realized full-scale
   calibration constant (which SPL hits ADC full scale — target ~112 dB).
 - Analog mux part choice for direct mode (on-resistance, leakage, JLC stock)
-  — verify at 2.5 V, not just 3.3 V.
+  — verify at 2.8 V, not just 3.3 V.
 - Firmware qualification window tuning (within 30–100 ms) and EXTI re-arm
   policy.
 - Module dimensions and castellation pinout order.
