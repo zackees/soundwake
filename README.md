@@ -114,22 +114,30 @@ stretching, startup masking, and the dB conversion itself — is firmware.
 The mic's raw output is millivolt-scale audio riding on a DC bias. The
 inter-stage coupling capacitors do double duty as the ~50 Hz high-pass (two
 cascaded coupling networks give a second-order corner for free), shedding
-rumble and the deepest clothing-rub energy. The micropower preamp (gain ~25×
-— the mic's −42 dBV sensitivity puts 112 dB SPL at roughly 90 mV peak)
-raises the signal above the detector's noise floor, and its own gain-bandwidth
-rolloff serves as the ~4 kHz low-pass. No dedicated filter stages are fitted.
+rumble and the deepest clothing-rub energy. The micropower preamp is
+deliberately limited to **7.98×**. The mic's −42 dBV sensitivity puts 112 dB
+SPL at roughly 90 mV peak, so this stage centred at 1.25 V on the 2.5 V rail
+produces 0.532–1.968 V. The remaining gain is in the ground-referenced
+precision rectifier, where the signal only has to move from 0 V to the 2.2 V
+envelope full scale. This replaces the impossible old “25× around mid-rail”
+allocation; see [`simulation/gain-split.md`](simulation/gain-split.md).
+
+The lower preamp gain no longer gets a 4 kHz corner for free from the 100 kHz
+GBW. A 56 pF feedback capacitor across the 698 kΩ gain resistor deliberately
+sets the approximately 4.1 kHz low-pass corner. No extra active filter stage
+is fitted.
 
 ```mermaid
 flowchart LR
     SPL(("sound<br/>pressure")) --> MIC["AMM-2742-T-WP-R mic<br/>IP57, top-port<br/>single-ended output"]
     MIC -->|"raw audio<br/>mV-scale AC on DC bias"| ACC["coupling caps<br/>double as ~50 Hz high-pass"]
-    ACC --> PRE["micropower preamp<br/>fixed gain<br/>GBW rolloff = ~4 kHz low-pass"]
+    ACC --> PRE["micropower preamp<br/>gain = 7.98x<br/>56 pF feedback cap = ~4.1 kHz low-pass"]
     PRE -->|"band-limited audio<br/>(bass + voice)"| S1OUT(("to stage 2"))
 ```
 
 ### Stage 2 — Precision peak detector: audio → loudness envelope
 
-A textbook block: a micropower op-amp precision rectifier (the diode sits
+A gain-configured micropower precision rectifier (gain = **3.05×**; the diode sits
 inside the feedback loop, so its drop and drift cancel) charges a hold
 capacitor through a fast path (attack ~1–5 ms, one kick registers at full
 height) while a bleed discharges it (release ~100–300 ms). Exponential decay
@@ -387,13 +395,14 @@ present**, instead of a fixed 3.0 V. Three module-side consequences
   effective trip would graze 68 dB, violating decision 4's bound. With
   the absolute reference the worst case stays ≈ 66.7 dB at both rail
   levels.
-- **Envelope full scale drops 115 → ~112 dB SPL.** At the 2.5 V rail the
-  usable output swing (~2.2 V) with a 115 dB full scale would compress
-  the preamp gain to ~18× and park the trip at ~5 mV — inside the
-  comparator offset band. Trading ~3 dB of top end restores gain ≈ 25×
-  (which also keeps the MCP614x GBW rolloff at the ~4 kHz corner) and
-  lifts the trip back to ~7 mV. Sounds above 112 dB simply saturate,
-  per the existing graceful-clipping rule.
+- **Envelope full scale is ~112 dB SPL.** A single 25× mid-rail preamp would
+  require a ±2.2 V swing and cannot work on either host rail. The realised
+  design is a 7.98× mid-rail preamp followed by a 3.05× ground-referenced
+  precision rectifier: at 112 dB it produces a 2.19 V envelope while the
+  preamp remains at 0.532–1.968 V on the 2.5 V corner. A 56 pF feedback
+  capacitor restores the 4.1 kHz low-pass corner that the original gain-25
+  GBW rolloff had supplied. The ~62 dB coarse trip remains ~6.9 mV; sounds
+  above 112 dB saturate gracefully at the envelope output.
 
 One residual ratiometric surface remains, owned by host firmware: the
 host's ADC reference is its own rail, so the absolute envelope reads in
@@ -634,8 +643,11 @@ board integrating this module) lives in the companion repo
   lot traceability, and a 100-piece quote required (no LCSC listing;
   hand-place or global sourcing).
 - Op-amp family: MCP614x (0.6 µA/ch, 100 kHz) vs TLV904x (10 µA/ch, 350 kHz)
-  — noise, output drive, and LCSC stock decide. Quad-with-spare vs dual +
-  passive mid-rail bias (the mic-rail buffer channel is freed by the LDO).
+  — noise, output drive, and LCSC stock decide. The selected topology is a
+  7.98× preamp plus 3.05× precision rectifier (not a single gain-25 preamp);
+  validate the actual MCP6144 rail swing at the final rectifier load in the
+  KiCad/SPICE sign-off. Quad-with-spare vs dual + passive mid-rail bias (the
+  mic-rail buffer channel is freed by the LDO).
 - Mic-rail micro-LDO SKU: XC6206P202-class 2.0 V — confirm LCSC listing,
   IQ, and dropout at 200 µA.
 - Comparator: TLV7041 (open-drain, 1.6–6.5 V) replaces the BOM's TLV3701
